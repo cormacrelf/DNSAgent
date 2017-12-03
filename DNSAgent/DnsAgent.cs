@@ -254,85 +254,81 @@ namespace DnsAgent
                     var useCompressionMutation = Options.CompressionMutation;
 
                     // Match rules
-                    if (message.IsQuery &&
-                        (question.RecordType == RecordType.A || question.RecordType == RecordType.Aaaa))
+                    for (var i = Rules.Count - 1; i >= 0; i--)
                     {
-                        for (var i = Rules.Count - 1; i >= 0; i--)
+                        var match = Regex.Match(question.Name, Rules[i].Pattern);
+                        if (!match.Success) continue;
+
+                        // Domain name matched
+
+                        var recordType = question.RecordType;
+                        if (Rules[i].ForceAAAA != null && Rules[i].ForceAAAA.Value) // RecordType override
+                            recordType = RecordType.Aaaa;
+
+                        if (Rules[i].NameServer != null) // Name server override
+                            targetNameServer = Rules[i].NameServer;
+
+                        if (Rules[i].UseHttpQuery != null) // HTTP query override
+                            useHttpQuery = Rules[i].UseHttpQuery.Value;
+
+                        if (Rules[i].QueryTimeout != null) // Query timeout override
+                            queryTimeout = Rules[i].QueryTimeout.Value;
+
+                        if (Rules[i].CompressionMutation != null) // Compression pointer mutation override
+                            useCompressionMutation = Rules[i].CompressionMutation.Value;
+
+                        if (Rules[i].Address != null)
                         {
-                            var match = Regex.Match(question.Name, Rules[i].Pattern);
-                            if (!match.Success) continue;
-
-                            // Domain name matched
-
-                            var recordType = question.RecordType;
-                            if (Rules[i].ForceAAAA != null && Rules[i].ForceAAAA.Value) // RecordType override
-                                recordType = RecordType.Aaaa;
-
-                            if (Rules[i].NameServer != null) // Name server override
-                                targetNameServer = Rules[i].NameServer;
-
-                            if (Rules[i].UseHttpQuery != null) // HTTP query override
-                                useHttpQuery = Rules[i].UseHttpQuery.Value;
-
-                            if (Rules[i].QueryTimeout != null) // Query timeout override
-                                queryTimeout = Rules[i].QueryTimeout.Value;
-
-                            if (Rules[i].CompressionMutation != null) // Compression pointer mutation override
-                                useCompressionMutation = Rules[i].CompressionMutation.Value;
-
-                            if (Rules[i].Address != null)
+                            IPAddress ip;
+                            IPAddress.TryParse(Rules[i].Address, out ip);
+                            if (ip == null) // Invalid IP, may be a domain name
                             {
-                                IPAddress ip;
-                                IPAddress.TryParse(Rules[i].Address, out ip);
-                                if (ip == null) // Invalid IP, may be a domain name
+                                var address = string.Format(Rules[i].Address, match.Groups.Cast<object>().ToArray());
+                                if (recordType == RecordType.A && useHttpQuery)
                                 {
-                                    var address = string.Format(Rules[i].Address, match.Groups.Cast<object>().ToArray());
-                                    if (recordType == RecordType.A && useHttpQuery)
-                                    {
-                                        await ResolveWithHttp(targetNameServer, address, queryTimeout, message);
-                                    }
-                                    else
-                                    {
-                                        var serverEndpoint = Utils.CreateIpEndPoint(targetNameServer, 53);
-                                        var dnsClient = new DnsClient(serverEndpoint.Address, queryTimeout,
-                                            serverEndpoint.Port);
-                                        var response =
-                                            await
-                                                Task<DnsMessage>.Factory.FromAsync(dnsClient.BeginResolve,
-                                                    dnsClient.EndResolve,
-                                                    address, recordType, question.RecordClass, null);
-                                        if (response == null)
-                                        {
-                                            Logger.Warning($"Remote resolve failed for {address}.");
-                                            return;
-                                        }
-                                        foreach (var answerRecord in response.AnswerRecords)
-                                        {
-                                            answerRecord.Name = question.Name;
-                                            message.AnswerRecords.Add(answerRecord);
-                                        }
-                                        message.ReturnCode = response.ReturnCode;
-                                        message.IsQuery = false;
-                                    }
+                                    await ResolveWithHttp(targetNameServer, address, queryTimeout, message);
                                 }
                                 else
                                 {
-                                    if (recordType == RecordType.A &&
-                                        ip.AddressFamily == AddressFamily.InterNetwork)
-                                        message.AnswerRecords.Add(new ARecord(question.Name, 600, ip));
-                                    else if (recordType == RecordType.Aaaa &&
-                                             ip.AddressFamily == AddressFamily.InterNetworkV6)
-                                        message.AnswerRecords.Add(new AaaaRecord(question.Name, 600, ip));
-                                    else // Type mismatch
-                                        continue;
-
-                                    message.ReturnCode = ReturnCode.NoError;
+                                    var serverEndpoint = Utils.CreateIpEndPoint(targetNameServer, 53);
+                                    var dnsClient = new DnsClient(serverEndpoint.Address, queryTimeout,
+                                        serverEndpoint.Port);
+                                    var response =
+                                        await
+                                            Task<DnsMessage>.Factory.FromAsync(dnsClient.BeginResolve,
+                                                dnsClient.EndResolve,
+                                                address, recordType, question.RecordClass, null);
+                                    if (response == null)
+                                    {
+                                        Logger.Warning($"Remote resolve failed for {address}.");
+                                        return;
+                                    }
+                                    foreach (var answerRecord in response.AnswerRecords)
+                                    {
+                                        answerRecord.Name = question.Name;
+                                        message.AnswerRecords.Add(answerRecord);
+                                    }
+                                    message.ReturnCode = response.ReturnCode;
                                     message.IsQuery = false;
                                 }
                             }
+                            else
+                            {
+                                if (recordType == RecordType.A &&
+                                    ip.AddressFamily == AddressFamily.InterNetwork)
+                                    message.AnswerRecords.Add(new ARecord(question.Name, 600, ip));
+                                else if (recordType == RecordType.Aaaa &&
+                                         ip.AddressFamily == AddressFamily.InterNetworkV6)
+                                    message.AnswerRecords.Add(new AaaaRecord(question.Name, 600, ip));
+                                else // Type mismatch
+                                    continue;
 
-                            break;
+                                message.ReturnCode = ReturnCode.NoError;
+                                message.IsQuery = false;
+                            }
                         }
+
+                        break;
                     }
 
                     // TODO: Consider how to integrate System.Net.Dns with this project.
